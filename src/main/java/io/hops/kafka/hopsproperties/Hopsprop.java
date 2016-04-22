@@ -12,11 +12,16 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermission;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.HashSet;
 import java.util.Properties;
+import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -28,6 +33,8 @@ public class Hopsprop extends Properties {
 
     static String keyStore;
     static String trustStore;
+    static Byte keyStorePw;
+    static Byte trustStorePw;
 
     //what is the userName, 
     public static Hopsprop create(String userName) {
@@ -42,13 +49,14 @@ public class Hopsprop extends Properties {
 
         Byte userKey = null;
         Byte userCert = null;
+
         //read the mysql reference here
         BufferedReader br;
         String nextLine;
         String split[];
 
-        String filePath = null;
-        String dirPath = "";
+        String filePath;
+        String dirPath;
 
         Hopsprop hops = new Hopsprop();
 
@@ -61,8 +69,14 @@ public class Hopsprop extends Properties {
             path is /srv/hadoop/etc/hadoop/ndb.props       
          */
         if ((dirPath = System.getenv("HADOOP_CONF_DIR")) != null) {
-            filePath = dirPath + "/ndb.props";
+            if (!dirPath.endsWith("/")) {
+                dirPath = dirPath.concat("/");
+            }
+            filePath = dirPath + "ndb.props";
         } else if ((dirPath = System.getenv("HADOOP_HOME")) != null) {
+            if (!dirPath.endsWith("/")) {
+                dirPath = dirPath.concat("/");
+            }
             filePath = dirPath + "etc/ndb.props";
         } else {
             filePath = "path to mysql properties file";
@@ -70,7 +84,7 @@ public class Hopsprop extends Properties {
 
         try {
             //read the mysql database properties
-            br = new BufferedReader(new FileReader(filePath));
+            br = new BufferedReader(new FileReader("/tmp/ndb.props"));
             while ((nextLine = br.readLine()) != null) {
                 split = nextLine.split("=");
                 if (split[0].contains("mysqlserver.host")) {
@@ -89,7 +103,8 @@ public class Hopsprop extends Properties {
             }
 
             Class.forName("com.mysql.jdbc.Driver");
-            conn = DriverManager.getConnection("jdbc:mysql://"+databaseHost+":" + databasePort + "/hopsworks", dbUserName, dbPassword);
+            //conn = DriverManager.getConnection("jdbc:mysql://"+databaseHost+":" + databasePort + "/hopsworks", dbUserName, dbPassword);
+            conn = DriverManager.getConnection("jdbc:mysql://bbc1.sics.se:13004/hopsworks", dbUserName, dbPassword);
 
             prepStatement = conn.prepareStatement("SELECT * from users where username=?");
             prepStatement.setString(1, userName);
@@ -107,28 +122,38 @@ public class Hopsprop extends Properties {
             if (resutlSet.next()) {
                 userKey = resutlSet.getByte("user_key");
                 userCert = resutlSet.getByte("user_cert");
+                keyStorePw = resutlSet.getByte("keystorepassword");
+                trustStorePw = resutlSet.getByte("truststorepassword");
             }
 
             String username = System.getProperty("user.name");
-            //make the files permission 600
-
-            File file1 = File.createTempFile(username + ".keystore", "jks", new File("/tmp"));
+            File file1 = File.createTempFile(username + ".keystore", ".jks", new File(System.getProperty("user.name")));
             FileOutputStream stream = new FileOutputStream(file1);
-            stream.write("misganu".getBytes());
+            stream.write(userKey);
             stream.flush();
             stream.close();
-            hops.setProperty("keyStore", "/tmp/" + file1.getName());
+            hops.setProperty("keystore", System.getProperty("user.name") + file1.getName());
+            hops.setProperty("keystore.password", keyStorePw.toString());
             //file1.deleteOnExit();
 
             //truststore location
-            File file2 = File.createTempFile(username + ".truststore", "jks", new File("/tmp"));
+            File file2 = File.createTempFile(username + ".truststore", ".jks", new File(System.getProperty("user.name")));
             stream = new FileOutputStream(file2);
-            stream.write("dessalegn".getBytes());
+            stream.write(userCert);
             stream.flush();
             stream.close();
-            hops.setProperty("trustStore", "/tmp/" + file2.getName());
+            hops.setProperty("truststore", System.getProperty("user.name") + file2.getName());
+            hops.setProperty("truststore.password", trustStorePw.toString());
             //file2.deleteOnExit();
 
+            //make the files permission 600. this fails when file is in /tmp. how do we solve this.
+            Set<PosixFilePermission> perms = new HashSet<>();
+            perms.add(PosixFilePermission.OWNER_READ);
+            perms.add(PosixFilePermission.OWNER_WRITE);
+            Files.setPosixFilePermissions(Paths.get(hops.getProperty("keystore")), perms);
+            Files.setPosixFilePermissions(Paths.get(hops.getProperty("truststore")), perms);
+
+            System.out.println("file1 is executable: "+file1.canExecute());
         } catch (SQLException | ClassNotFoundException ex) {
             Logger.getLogger(Hopsprop.class.getName()).log(Level.SEVERE, null, ex);
         } catch (FileNotFoundException ex) {
